@@ -44,8 +44,8 @@ byte rfid1UID[4] = {0x13, 0xA3, 0x50, 0x11};  // First authorized RFID card - 4-
 byte rfid2UID[4] = {0x03, 0x32, 0xC0, 0x0D};  // Second authorized RFID card - 4-byte unique identifier
 
 // Variables to track the LED/Relay states - embedded systems need to track state
-bool relay1On = false;      // Status of relay 1 - tracks whether seat 1 is occupied
-bool relay2On = false;      // Status of relay 2 - tracks whether seat 2 is occupied
+bool relay1On = false;      // Status of relay 1 - tracks whether room 1 is occupied
+bool relay2On = false;      // Status of relay 2 - tracks whether room 2 is occupied
 
 // Variables to track which tag turned on which relay - implements ownership concept
 byte relay1Owner[4] = {0, 0, 0, 0};  // UID of card that activated relay 1 - stores 4-byte ID
@@ -56,6 +56,11 @@ bool relay2HasOwner = false;  // Flag for relay 2 ownership - indicates if relay
 // Buffer for storing display messages - manages what will be shown on the OLED
 String displayMessages[5];  // Circular buffer to hold last 5 messages - mimics serial monitor
 int messageIndex = 0;       // Current position in circular buffer - tracks where to add new message
+
+// Display mode flags
+bool showingAlert = false;  // Flag to indicate if an alert message is currently displayed
+unsigned long alertStartTime = 0; // Timestamp when alert was shown - used for timing alert display duration
+#define ALERT_DURATION 3000 // Duration to show alert messages in milliseconds (3 seconds)
 
 // Function to check if two UIDs match - helper function for authentication
 // Takes two byte arrays and their size, returns true if all bytes match
@@ -74,38 +79,6 @@ void saveOwner(byte *destination, byte *source, byte size) {
   }
 }
 
-
-
-// Function to update the OLED display with current status and messages
-void updateDisplay() {
-  display.clearDisplay();  // Clear the display buffer - prevents ghosting of previous content
-  display.setTextSize(1);  // Set text size to smallest (1) - allows more content to fit on screen
-  display.setTextColor(SSD1306_WHITE);  // Set text color to white - standard for monochrome OLED
-  display.setCursor(0, 0);  // Start at top-left corner - position for title
-  
-  // Display title and status information - system state summary
-  display.println("RFID Access System");
-  display.println("------------------");
-  display.print("Seat 1: ");
-  display.println(relay1On ? "Occupied" : "Free");  // Show status of seat 1
-  display.print("Seat 2: ");
-  display.println(relay2On ? "Occupied" : "Free");  // Show status of seat 2
-  display.println("------------------");
-  
-  // Display last few messages in reverse chronological order (newest at bottom)
-  int count = 0;
-  for (int i = 0; i < 2; i++) {  // Show up to 2 most recent messages - fits on screen
-    int idx = (messageIndex - i - 1 + 5) % 5;  // Calculate index in circular buffer, accounting for wrap-around
-    if (displayMessages[idx] != "") {  // Only show non-empty message slots
-      display.println(displayMessages[idx]);  // Print the message on a new line
-      count++;
-    }
-  }
-  
-  display.display();  // Push the buffer to the display - makes changes visible on screen
-}
-
-
 // Function to add a message to both Serial and OLED display - unified logging system
 // Takes a string message and adds it to the circular buffer and updates display
 void addMessage(String message) {
@@ -115,9 +88,82 @@ void addMessage(String message) {
   // Add to circular buffer for OLED display
   displayMessages[messageIndex] = message;
   messageIndex = (messageIndex + 1) % 5;  // Circular buffer implementation - wrap around after 5 messages
+}
+
+// Function to show an alert message on the OLED - displays important notifications prominently
+void showAlert(String message1, String message2 = "") {
+  display.clearDisplay();  // Clear the display buffer - prepares for new content
+  display.setTextSize(1);  // Set text size to smallest (1) - allows more content to fit
+  display.setTextColor(SSD1306_WHITE);  // Set text color to white - standard for monochrome OLED
   
-  // Update the OLED display with new message contents
-  updateDisplay();
+  // Display the alert title with emphasis
+  display.setCursor(0, 0);  // Start at top-left
+  display.println("! ALERT !");  // Alert header
+  display.println("------------------");  // Visual separator
+  
+  // Display the alert message centered
+  display.setCursor(0, 24);  // Position for main message
+  display.println(message1);  // First line of alert
+  
+  if (message2 != "") {  // If there's a second message line
+    display.setCursor(0, 34);  // Position for second message line
+    display.println(message2);  // Second line of alert
+  }
+  
+  // Display UID information if available
+  if (mfrc522.uid.size > 0) {  // If we have a card UID
+    display.setCursor(0, 50);  // Position for UID information
+    display.print("UID:");  // Label for UID
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      // Format UID bytes with leading zeros
+      display.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
+      display.print(mfrc522.uid.uidByte[i], HEX);  // Display each byte in hexadecimal
+    }
+  }
+  
+  display.display();  // Update the display with the alert
+  
+  // Set alert display flags
+  showingAlert = true;  // Set flag that we're in alert mode
+  alertStartTime = millis();  // Record current time as alert start time
+}
+
+// Function to update the OLED display with current status and messages
+void updateDisplay() {
+  // Check if we should exit alert mode
+  if (showingAlert && (millis() - alertStartTime > ALERT_DURATION)) {
+    showingAlert = false;  // Exit alert mode after duration expires
+  }
+  
+  // Skip updating if we're showing an alert and it's still active
+  if (showingAlert) return;
+  
+  // Normal display mode - shows system status and recent messages
+  display.clearDisplay();  // Clear the display buffer - prevents ghosting of previous content
+  display.setTextSize(1);  // Set text size to smallest (1) - allows more content to fit on screen
+  display.setTextColor(SSD1306_WHITE);  // Set text color to white - standard for monochrome OLED
+  display.setCursor(0, 0);  // Start at top-left corner - position for title
+  
+  // Display title and status information - system state summary
+  display.println("RFID Access System");
+  display.println("------------------");
+  display.print("Room 1: ");
+  display.println(relay1On ? "Occupied" : "Free");  // Show status of room 1
+  display.print("Room 2: ");
+  display.println(relay2On ? "Occupied" : "Free");  // Show status of room 2
+  display.println("------------------");
+  
+  // Display last few messages in reverse chronological order (newest at bottom)
+  int count = 0;
+  for (int i = 0; i < 3; i++) {  // Show up to 3 most recent messages - fits on screen
+    int idx = (messageIndex - i - 1 + 5) % 5;  // Calculate index in circular buffer, accounting for wrap-around
+    if (displayMessages[idx] != "") {  // Only show non-empty message slots
+      display.println(displayMessages[idx]);  // Print the message on a new line
+      count++;
+    }
+  }
+  
+  display.display();  // Push the buffer to the display - makes changes visible on screen
 }
 
 void setup() {
@@ -178,11 +224,17 @@ void setup() {
   addMessage("System ready!");  // Indicate system initialization complete
   addMessage("Scan your RFID tag");  // User instruction
   
-  // Update display with current seat status - initial system state report
+  // Update display with current room status - initial system state report
   updateDisplay();  // Refresh the display with current information
 }
 
 void loop() {
+  // Check if we should exit alert mode and update display
+  if (showingAlert && (millis() - alertStartTime > ALERT_DURATION)) {
+    showingAlert = false;  // Exit alert mode
+    updateDisplay();  // Update with normal display
+  }
+
   // Look for new cards - continuous polling for RFID tags
   if (!mfrc522.PICC_IsNewCardPresent()) {
     return;  // If no new card is present, exit this loop iteration
@@ -200,7 +252,7 @@ void loop() {
     uidString += (mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
     uidString += String(mfrc522.uid.uidByte[i], HEX);  // Add each byte in hexadecimal
   }
-  addMessage(uidString);  // Display card UID - system monitoring
+  addMessage(uidString);  // Add card UID to message log
 
   // Check if this card is the owner of relay 1 - ownership verification
   bool isRelay1Owner = relay1HasOwner && compareUID(relay1Owner, mfrc522.uid.uidByte, 4);
@@ -219,7 +271,8 @@ void loop() {
     relay1HasOwner = false;  // Clear ownership
     digitalWrite(RELAY_1_PIN, LOW);  // Turn off the physical relay
     addMessage("Relay 1 OFF");  // Log the action
-    addMessage("Left Seat 1");  // User feedback
+    addMessage("Left Room 1");  // User feedback
+    updateDisplay();  // Update display with new status
   }
   else if (isRelay2Owner) {
     // This card owns relay 2, so it can turn it off - implements "check-out" functionality
@@ -227,7 +280,8 @@ void loop() {
     relay2HasOwner = false;  // Clear ownership
     digitalWrite(RELAY_2_PIN, LOW);  // Turn off the physical relay
     addMessage("Relay 2 OFF");  // Log the action
-    addMessage("Left Seat 2");  // User feedback
+    addMessage("Left Room 2");  // User feedback
+    updateDisplay();  // Update display with new status
   }
   else if (isAuthorizedCard) {
     // This is an authorized card but doesn't currently own any relay - handling "check-in"
@@ -240,11 +294,13 @@ void loop() {
         saveOwner(relay1Owner, mfrc522.uid.uidByte, 4);  // Save user's UID as owner
         digitalWrite(RELAY_1_PIN, HIGH);  // Turn on the physical relay
         addMessage("Relay 1 ON");  // Log the action
-        addMessage("Seat 1 assigned");  // User feedback
+        addMessage("Room 1 assigned");  // User feedback
+        updateDisplay();  // Update display with new status
       }
       else {
         // relay 1 is already taken - provide feedback
-        addMessage("Seat 1 occupied");
+        addMessage("Room 1 occupied");
+        showAlert("Room 1 is already", "occupied");  // Show alert on display
         
         // Flash relay 1 to indicate it's already taken - visual feedback
         for (int i = 0; i < 2; i++) {
@@ -266,11 +322,13 @@ void loop() {
         saveOwner(relay2Owner, mfrc522.uid.uidByte, 4);  // Save user's UID as owner
         digitalWrite(RELAY_2_PIN, HIGH);  // Turn on the physical relay
         addMessage("Relay 2 ON");  // Log the action
-        addMessage("Seat 2 assigned");  // User feedback
+        addMessage("Room 2 assigned");  // User feedback
+        updateDisplay();  // Update display with new status
       }
       else {
         // relay 2 is already taken - provide feedback
-        addMessage("Seat 2 occupied");
+        addMessage("Room 2 occupied");
+        showAlert("Room 2 is already", "occupied");  // Show alert on display
         
         // Flash relay 2 to indicate it's already taken - visual feedback
         for (int i = 0; i < 2; i++) {
@@ -288,11 +346,14 @@ void loop() {
     // Unauthorized RFID tag - security enforcement
     addMessage("Access denied");
     
-    // Check if all seats are occupied - additional user feedback
+    // Check if all rooms are occupied - additional user feedback
     if (relay1On && relay2On) {
-      addMessage("All seats occupied");
+      addMessage("All rooms occupied");
+      showAlert("ACCESS DENIED", "All rooms occupied");  // Show alert on display
     }
     else {
+      showAlert("ACCESS DENIED", "Unauthorized card");  // Show alert on display
+      
       // Flash both relays to indicate unauthorized access - visual alarm
       for (int i = 0; i < 3; i++) {
         digitalWrite(RELAY_1_PIN, HIGH);  // Turn on relay 1
@@ -308,9 +369,6 @@ void loop() {
       digitalWrite(RELAY_2_PIN, relay2On ? HIGH : LOW);  // Restore relay 2 to its correct state
     }
   }
-
-  // Update display with current status - system state report
-  updateDisplay();  // Refresh the display with all new information
 
   // Halt PICC and stop encryption - proper RFID card handling
   mfrc522.PICC_HaltA();  // Halts communication with the card
